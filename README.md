@@ -67,6 +67,75 @@ Two deliberate non-mappings, and why:
 `cut-sequence->timeline`'s output passes `kami.eizo.timeline/validate-timeline`
 — see `test/anime/timeline_test.cljc`.
 
+## Real cross-repo render proof (`test/e2e/`)
+
+`test/anime/timeline_test.cljc` only proves `cut-sequence->timeline`'s output
+*validates* as a `kami.eizo.timeline` EDL — it never proves that EDL can
+actually be turned into a video. `test/e2e/real_anime_douga_ffmpeg_proof.cljs`
+(nbb) closes that gap: it drives a real anime cut-sequence all the way through
+to a real, correct rendered `.mp4`, exercising `anime` + `kami-eizo-timeline`
++ [`douga`](https://github.com/kotoba-lang/douga) together for the first time.
+Nothing here is hand-simulated — every step is the real library function,
+executed against a real `ffmpeg` subprocess.
+
+Pipeline: `anime.production`-shaped cut entities (4 cuts, one scene, real
+`anime.production/slug` + `vertex-uri` identity helpers, one cut marked
+`"retake"` via a real `:cut/stage-status`, one marked all-`"approved"`) →
+the real `anime.timeline/cut-sequence->timeline` → a real
+`kami.eizo.timeline` EDL (validated with `validate-timeline`) → **a real
+bridging step** → the real `douga.eizo-timeline/render-plan` → the real
+`douga.ffmpeg/scene-segment-cmd` / `concat-segments-cmd` / `bgm-mix-cmd`
+command builders → real `ffmpeg` child processes → a real output video,
+verified with real `ffprobe` (duration, dimensions) and real sampled pixel
+colors at 9 timestamps (including right before/after each of the 3 cut
+boundaries), cross-checked against `kami.eizo.timeline/clip-at-frame`.
+
+**A genuine integration gap surfaced, not designed away**:
+`anime.timeline`'s adapter deliberately only knows anime's own vocabulary —
+a clip's `:clip/source-id` is the bare `:cut/id` (an opaque production
+identifier, not a renderable asset path), and clips carry no
+`:douga/scene-index` (a douga-specific key anime has no reason to know
+about, per its own docstring — the adapter produces a *generic*
+`kami.eizo.timeline` value). `douga.eizo-timeline/render-plan` requires
+both. A real caller sitting between the two needs a real "cut id → rendered
+asset" resolution step (exactly what a production pipeline's finish/composite
+blob store provides) plus scene numbering; the proof script writes that
+bridge out explicitly (`attach-douga-keys`) rather than hiding it inside
+either library, and re-validates the bridged timeline before handing it to
+douga.
+
+Last verified run: **all 29 checks passed** — 64×64 output, 7.835s duration
+(expected 7.75s; the ~85ms delta is the same concat-demuxer `-c copy` DTS
+rounding douga's own proof documents, not an anime or douga defect), and
+every sampled pixel matched its expected cut's color within a 40/255-channel
+tolerance (actual observed drift was 1–3/255, ordinary H.264/yuv420p lossy
+encoding of a flat color field).
+
+Requires system `ffmpeg` + `ffprobe` on `PATH`, and local checkouts of
+`kotoba-lang/douga` and `kotoba-lang/kami-eizo-timeline` whose `src/` are
+reachable via classpath:
+
+```bash
+nbb -cp src:test/e2e:<path-to-douga>/src:<path-to-kami-eizo-timeline>/src \
+    test/e2e/real_anime_douga_ffmpeg_proof.cljs
+```
+
+Exits 0 with a PASS report on success, 1 with the failing checks printed on
+failure.
+
+**Maturity**: this proves the `anime` → `kami-eizo-timeline` →  `douga` →
+`ffmpeg` data path is real end-to-end for a straight hard-cut sequence (no
+transitions — `douga.eizo-timeline`'s v0 only emits hard cuts, see douga's
+README). It does not yet cover: video-track transitions/retakes actually
+re-cutting footage (the retake marker here is informational, not acted on),
+per-cut voice/dialogue lines (anime's adapter is video-only; this proof
+supplies silent placeholder audio via `douga.ffmpeg/silent-audio-cmd`), or
+real production assets (frames here are flat lavfi test colors, not real
+composite renders). The asset-resolution bridge (`attach-douga-keys`) is a
+worked example of the shape a real caller needs, not a reusable library
+function — promoting it into `anime.timeline` or a new integration
+namespace is a natural follow-up once a real consuming actor needs it.
+
 ## Occupation
 
 ISCO-08 `2166` (Graphic and Multimedia Designers — includes animation
